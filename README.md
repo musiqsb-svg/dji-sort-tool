@@ -3,7 +3,7 @@
 DJI 카메라·드론으로 찍은 영상과 사진을 **촬영일별 폴더**로 정리하는 Windows용 무료 프로그램입니다.
 폴더를 창에 끌어다 놓고 [정리 시작]만 누르면 됩니다.
 
-> 만든 사람: 이중필름 · 비영리 무료 배포 · DJI와는 무관한 개인 제작 프로그램입니다. DJI는 SZ DJI Technology Co., Ltd.의 상표입니다.
+> 만든 사람: 이중필름 (유튜브 채널 **이중필름**) · 문의: nasunfilm@gmail.com · 비영리 무료 배포 · DJI와는 무관한 개인 제작 프로그램입니다. DJI는 SZ DJI Technology Co., Ltd.의 상표입니다.
 
 > [!WARNING]
 > **반드시 원본을 복사한 뒤, 복사한 폴더를 정리하세요.**
@@ -110,6 +110,11 @@ DJI정리툴_1.2\
 | `assets\make_icon.ps1` | 아이콘 생성 |
 | `installer\DJISortTool.iss` | 설치 프로그램 (Inno Setup) |
 | `uninstall\Uninstall.cs` | 제거 프로그램 (설치된 DJI정리툴을 찾아 Windows 제거 실행) |
+
+## 문의
+
+- 만든 사람: 이중필름 (유튜브 채널 **이중필름**)
+- 문의·오류 제보: nasunfilm@gmail.com — 정리하려던 폴더 구조와 결과 화면을 함께 보내 주시면 빨리 확인할 수 있습니다.
 
 ## 라이선스
 
