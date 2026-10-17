@@ -5,7 +5,7 @@
 ;  build.ps1 -Release 가 버전을 넘겨 줌 (직접 컴파일하면 아래 기본값)
 
 #ifndef AppVersion
-  #define AppVersion "1.0"
+  #define AppVersion "1.2"
 #endif
 
 [Setup]

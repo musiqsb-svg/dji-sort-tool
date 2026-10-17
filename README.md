@@ -1,16 +1,26 @@
-# DJI정리툴
+﻿# DJI정리툴
 
 DJI 카메라·드론으로 찍은 영상과 사진을 **촬영일별 폴더**로 정리하는 Windows용 무료 프로그램입니다.
 폴더를 창에 끌어다 놓고 [정리 시작]만 누르면 됩니다.
 
 > 만든 사람: 이중필름 · 비영리 무료 배포 · DJI와는 무관한 개인 제작 프로그램입니다. DJI는 SZ DJI Technology Co., Ltd.의 상표입니다.
 
+> [!WARNING]
+> **반드시 원본을 복사한 뒤, 복사한 폴더를 정리하세요.**
+> 이 프로그램은 PC로 복사해 둔 데이터를 정리하도록 만들었으며, SD카드나 유일한 원본을 바로 정리하는 방식은 고려하지 않았습니다.
+> 테스트를 거쳐 안전하다고 판단해 배포하지만, PC 환경(백신·동기화 프로그램·저장 장치 등)에 따라 예상하지 못한 문제가 생길 수 있습니다.
+> 원본 카드나 백업본은 정리가 끝나고 결과를 확인할 때까지 지우거나 포맷하지 마세요.
+
 ## 내려받기
 
 | 파일 | 설명 |
 |---|---|
-| `DJISortTool-1.0-Setup.exe` | 설치형. 시작 메뉴·바탕화면 아이콘, [설정 › 앱]에서 제거 |
-| `DJISortTool-1.0-Portable.zip` | 설치 없이 압축만 풀어 `DJISortTool.exe` 실행 |
+| `DJISortTool-1.2-Setup.exe` | 설치형. 시작 메뉴·바탕화면 아이콘, [설정 › 앱]에서 제거 |
+| `DJISortTool-1.2-Portable.zip` | 설치 없이 압축만 풀어 `DJISortTool.exe` 실행 |
+| `DJISortTool-Uninstall.exe` | 설치형으로 설치한 DJI정리툴 제거 (실행만 하면 됨. [설정 › 앱]에서 제거하는 것과 같음) |
+
+- **업데이트**: 새 버전의 `Setup.exe`를 실행하면 이전 버전 위에 그대로 설치됩니다. 먼저 지울 필요 없고 설정·기록도 유지됩니다.
+- **제거**: 설정·옮긴 기록(`%LOCALAPPDATA%\DJISortTool`)까지 함께 지워집니다. Portable은 압축을 푼 폴더만 지우면 됩니다.
 
 둘 다 Windows 10/11, 관리자 권한 없이 쓸 수 있습니다. 받은 파일이 원본과 같은지는 함께 올린 `SHA256.txt`의 지문으로 확인할 수 있습니다.
 
@@ -41,7 +51,7 @@ DJI 카메라·드론으로 찍은 영상과 사진을 **촬영일별 폴더**�
 
 ## 사용법
 
-1. SD카드 내용을 PC 폴더로 복사합니다. (카드 통째, DCIM 폴더만, 영상 파일만 — 모두 됩니다)
+1. SD카드 내용을 PC 폴더로 **복사**합니다. (카드 통째, DCIM 폴더만, 영상 파일만 — 모두 됩니다) 원본은 그대로 둡니다.
 2. DJI정리툴을 열고 그 폴더를 창에 끌어다 놓습니다. (또는 [폴더 선택…])
    설치형은 폴더를 우클릭해 **DJI정리툴로 정리**를 눌러도 됩니다. (Windows 11은 '더 많은 옵션 표시' 안에 있음)
 3. 미리보기를 확인하고 [정리 시작]을 누릅니다.
@@ -80,7 +90,16 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Test
 powershell -ExecutionPolicy Bypass -File build.ps1 -Release
 ```
 
-- `release\DJISortTool-1.0-Portable.zip`, `release\DJISortTool-1.0-Setup.exe`, `release\SHA256.txt`
+- 이 소스코드 폴더 바깥(버전 폴더)에 만들어집니다 → 폴더를 열면 설치 파일이 바로 보임
+
+```r
+DJI정리툴_1.2\
+├ 소스코드(개발용)\          ← 이 폴더 (빌드·수정할 때만)
+├ 설치없이_쓰기\DJISortTool-1.2-Portable.zip
+├ DJISortTool-1.2-Setup.exe
+├ DJISortTool-Uninstall.exe
+└ SHA256.txt
+```
 
 | 파일 | 내용 |
 |---|---|
@@ -90,6 +109,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Release
 | `src\Settings.cs` | 설정 저장 |
 | `assets\make_icon.ps1` | 아이콘 생성 |
 | `installer\DJISortTool.iss` | 설치 프로그램 (Inno Setup) |
+| `uninstall\Uninstall.cs` | 제거 프로그램 (설치된 DJI정리툴을 찾아 Windows 제거 실행) |
 
 ## 라이선스
 

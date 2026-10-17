@@ -2,8 +2,11 @@
 #   dist\DJISortTool.exe          프로그램
 #   build\OrganizerTest.exe       정리 로직 테스트 (-Test 를 붙이면 빌드 후 실행)
 #   -Release : 테스트 후 배포 파일까지 만듦 (버전은 src\Program.cs 의 Version)
-#     release\DJISortTool-<버전>-Portable.zip   설치 없이 실행
-#     release\DJISortTool-<버전>-Setup.exe      설치 프로그램 (Inno Setup 6 필요)
+#     이 소스코드 폴더 바깥(버전 폴더 DJI정리툴_<버전>) 맨 위에 만듦. 파일 이름은 영문 (GitHub 릴리스에 그대로 올림)
+#       DJISortTool-<버전>-Setup.exe                 설치 프로그램 (Inno Setup 6 필요)
+#       DJISortTool-Uninstall.exe                    제거 프로그램 (설치한 DJI정리툴을 찾아 제거)
+#       설치없이_쓰기\DJISortTool-<버전>-Portable.zip
+#       SHA256.txt                                   위 파일들의 지문
 param([switch]$Test, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
@@ -19,6 +22,10 @@ $common = '/nologo', '/codepage:65001', '/optimize+', '/platform:anycpu', '/warn
        /r:System.Windows.Forms.dll /r:System.Drawing.dll src\*.cs
 if ($LASTEXITCODE) { throw 'DJISortTool.exe 빌드 실패' }
 
+& $csc @common /target:winexe /out:dist\DJISortTool-Uninstall.exe /win32icon:assets\app.ico /win32manifest:src\app.manifest `
+       /r:System.Windows.Forms.dll uninstall\Uninstall.cs
+if ($LASTEXITCODE) { throw 'DJISortTool-Uninstall.exe 빌드 실패' }
+
 & $csc @common /target:exe /out:build\OrganizerTest.exe tests\OrganizerTest.cs src\Organizer.cs
 if ($LASTEXITCODE) { throw 'OrganizerTest.exe 빌드 실패' }
 
@@ -30,18 +37,25 @@ if (-not $Release) { return }
 # ── 배포 파일 ─────────────────────────────────────────────
 $version = [regex]::Match([IO.File]::ReadAllText('src\Program.cs'), 'Version\s*=\s*"([^"]+)"').Groups[1].Value
 if (-not $version) { throw 'src\Program.cs 에서 버전을 찾지 못함' }
-$null = New-Item -ItemType Directory -Force 'release'
+$out = Split-Path $PSScriptRoot -Parent                     # 버전 폴더 (DJI정리툴_<버전>)
+$setup     = Join-Path $out "DJISortTool-$version-Setup.exe"
+$uninstall = Join-Path $out 'DJISortTool-Uninstall.exe'
+$zip       = Join-Path $out "설치없이_쓰기\DJISortTool-$version-Portable.zip"
+$null = New-Item -ItemType Directory -Force (Split-Path $zip)
 
-# 설치 없이 실행: 압축을 풀면 DJISortTool 폴더 하나 (파일명은 영문이라 어떤 압축 프로그램에서도 깨지지 않음)
+# 설치 없이 실행: 압축을 풀면 DJISortTool 폴더 하나 (안의 파일명은 영문이라 어떤 압축 프로그램에서도 깨지지 않음)
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
-$zip = "release\DJISortTool-$version-Portable.zip"
-if (Test-Path $zip) { [IO.File]::Delete((Resolve-Path $zip)) }
-$za = [IO.Compression.ZipFile]::Open((Join-Path $PSScriptRoot $zip), 'Create')
+if (Test-Path $zip) { [IO.File]::Delete($zip) }
+$za = [IO.Compression.ZipFile]::Open($zip, 'Create')
 try {
     $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($za, $exe.FullName, 'DJISortTool/DJISortTool.exe', 'Optimal')
     $null = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($za, (Resolve-Path 'LICENSE'), 'DJISortTool/LICENSE.txt', 'Optimal')
 } finally { $za.Dispose() }
 "배포: $zip"
+
+# 제거 프로그램 (버전과 상관없이 설치된 DJI정리툴을 제거)
+Copy-Item 'dist\DJISortTool-Uninstall.exe' $uninstall -Force
+"배포: $uninstall"
 
 # 설치 프로그램
 $iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe" |
@@ -51,11 +65,13 @@ if (-not $iscc) { Write-Warning 'Inno Setup 6이 없어 설치 프로그램은 �
 $tmpOut = Join-Path $env:TEMP 'DJISortTool-setup'
 & $iscc /Q "/DAppVersion=$version" "/O$tmpOut" 'installer\DJISortTool.iss'
 if ($LASTEXITCODE) { throw '설치 프로그램 빌드 실패' }
-Copy-Item (Join-Path $tmpOut "DJISortTool-$version-Setup.exe") 'release' -Force
+Copy-Item (Join-Path $tmpOut "DJISortTool-$version-Setup.exe") $setup -Force
 [IO.Directory]::Delete($tmpOut, $true)
-"배포: release\DJISortTool-$version-Setup.exe"
+"배포: $setup"
 
-# 배포 글에 올릴 파일 지문 (받은 사람이 같은 파일인지 확인용)
-Get-ChildItem 'release' -File | Where-Object { $_.Name -like "DJISortTool-$version-*" } | ForEach-Object {
-    '{0}  {1}  ({2:N0} KB)' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash, $_.Name, ($_.Length / 1KB)
-} | Tee-Object 'release\SHA256.txt'
+# 배포 글에 올릴 파일 지문 (받은 사람이 같은 파일인지 확인용). 메모장에서 한글이 깨지지 않게 UTF-8(BOM)
+$lines = $setup, $uninstall, $zip | ForEach-Object {
+    '{0}  {1}  ({2:N0} KB)' -f (Get-FileHash $_ -Algorithm SHA256).Hash, (Split-Path $_ -Leaf), ((Get-Item $_).Length / 1KB)
+}
+[IO.File]::WriteAllLines((Join-Path $out 'SHA256.txt'), [string[]]$lines, (New-Object Text.UTF8Encoding($true)))
+$lines
