@@ -13,6 +13,8 @@
 //  - (옵션) 정리 후 날짜 폴더 이름 끝에 용량:  260823_DATA_61.2G
 //    같은 날짜 폴더가 이미 있으면 거기에 합치고 용량을 갱신
 //  - 정리 후 옮긴 파일이 모두 제자리에 같은 크기로 있는지 확인
+//  - 탐색기·Mac·NAS가 만드는 찌꺼기(Thumbs.db, desktop.ini, ._*, .DS_Store, @eaDir 등)는 정리 대상도 아니고
+//    폴더를 남기는 이유도 아님 → 이것만 남은 폴더(DCIM 등)는 함께 정리
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -63,8 +65,10 @@ namespace DJISortTool
         public string Root;
         public List<PlanItem> Moved = new List<PlanItem>();
         public int Skipped, Failed;
-        public List<string> Trashed = new List<string>();    // 휴지통으로 보낸 카드 관리 폴더
-        public List<string> Kept = new List<string>();       // 다른 파일이 섞여 있어 남겨둔 관리 폴더
+        public List<string> Trashed = new List<string>();      // 휴지통으로 보낸 카드 관리 폴더 (MISC, DCIM\MISC)
+        public List<string> Kept = new List<string>();         // 다른 파일이 섞여 있어 남겨둔 관리 폴더
+        public Dictionary<string, string> KeptBecause = new Dictionary<string, string>();  // 남겨둔 폴더 → 이유가 된 파일 (예: MISC → 메모.txt)
+        public List<string> TrashFailed = new List<string>();  // 휴지통으로 보내지 못한 관리 폴더 (탐색기가 열고 있음 등)
         public Dictionary<string, string> FinalNames = new Dictionary<string, string>();   // 날짜 → 최종 폴더 이름
         public List<KeyValuePair<string, string>> Renamed = new List<KeyValuePair<string, string>>();   // 바꾼 폴더 경로 (전, 후)
         public List<string> RenamedExisting = new List<string>();   // 정리 전부터 있던 폴더의 이름이 바뀐 것 ("전 → 후")
@@ -95,6 +99,14 @@ namespace DJISortTool
         // MISC(카드 관리 폴더)가 이 파일들로만 되어 있을 때만 휴지통으로 보냄
         static readonly HashSet<string> MiscExt = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".thm", ".scr", ".db", ".device", "" };
 
+        // 탐색기·Mac·NAS가 알아서 만드는 찌꺼기. 정리 대상이 아니고, 이것 때문에 빈 폴더가 남지 않게 함께 지움
+        //  Thumbs.db·desktop.ini(탐색기, 특히 NAS), .DS_Store·._사진이름(Mac에 꽂았던 카드), @eaDir(시놀로지)·.@__thumb(QNAP) 썸네일,
+        //  .dropbox.device(Dropbox 카메라 업로드가 꽂은 카드에 남기는 표시)
+        static readonly HashSet<string> JunkFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "Thumbs.db", "ehthumbs.db", "ehthumbs_vista.db", "desktop.ini", ".DS_Store", ".localized", ".dropbox.device" };
+        static readonly HashSet<string> JunkDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "@eaDir", ".@__thumb", ".Spotlight-V100", ".fseventsd", ".Trashes", ".TemporaryItems" };
+
         public static string SubFolder(Kind k)
         {
             switch (k) {
@@ -119,9 +131,13 @@ namespace DJISortTool
             if (r.Error != null) return r;
             r.Root = dir.FullName.TrimEnd('\\');
 
-            var dji = Walk(dir).Where(f => f.Name.StartsWith("DJI_", StringComparison.OrdinalIgnoreCase)).ToList();
+            var all = Walk(dir).ToList();
+            var dji = all.Where(f => f.Name.StartsWith("DJI_", StringComparison.OrdinalIgnoreCase)).ToList();
             if (dji.Count == 0) {
-                r.Error = "DJI 파일(DJI_로 시작하는 파일)이 없습니다.\nDJI 카드에서 복사한 폴더인지 확인해 주세요. 이미 정리한 폴더일 수도 있습니다.";
+                // 소니 카드(M4ROOT·짝 XML)로 보이면 맞는 프로그램을 알려 줌
+                bool sony = all.Any(f => f.FullName.IndexOf(@"\M4ROOT\", StringComparison.OrdinalIgnoreCase) >= 0 || f.Name.EndsWith("M01.XML", StringComparison.OrdinalIgnoreCase));
+                r.Error = sony ? "소니 카메라 파일로 보입니다. DJI 타입 정리기는 DJI 카메라·드론 카드용입니다 (소니 파일은 SONY 타입 정리기로)."
+                               : "DJI 파일(DJI_로 시작하는 파일)이 없습니다.\nDJI 카드에서 복사한 폴더인지 확인해 주세요. 이미 정리한 폴더일 수도 있습니다.";
                 return r;
             }
 
@@ -188,7 +204,7 @@ namespace DJISortTool
             return null;
         }
 
-        // 하위 폴더까지 파일 나열. 이미 정리한 결과(yymmdd_DATA)와 카드 관리 폴더(MISC)는 건너뜀
+        // 하위 폴더까지 파일 나열. 이미 정리한 결과(yymmdd_DATA)·카드 관리 폴더(MISC)·찌꺼기는 건너뜀
         static IEnumerable<FileInfo> Walk(DirectoryInfo root)
         {
             var stack = new Stack<DirectoryInfo>();
@@ -198,12 +214,23 @@ namespace DJISortTool
                 FileInfo[] files; DirectoryInfo[] subs;
                 try { files = d.GetFiles(); subs = d.GetDirectories(); }
                 catch (Exception) { continue; }   // 권한 없는 폴더는 건너뜀
-                foreach (var f in files) yield return f;
+                foreach (var f in files) if (!IsJunkFile(f.Name)) yield return f;
                 foreach (var s in subs) {
-                    if (DataDir.IsMatch(s.Name) || s.Name.Equals("MISC", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (DataDir.IsMatch(s.Name) || s.Name.Equals("MISC", StringComparison.OrdinalIgnoreCase) || JunkDirs.Contains(s.Name)) continue;
                     stack.Push(s);
                 }
             }
+        }
+
+        static bool IsJunkFile(string name) { return JunkFiles.Contains(name) || name.StartsWith("._", StringComparison.Ordinal); }
+
+        // 찌꺼기 파일이거나 찌꺼기 폴더(@eaDir 등) 안의 파일인지 (root 아래 경로만 봄)
+        static bool IsJunk(string file, string root)
+        {
+            if (IsJunkFile(Path.GetFileName(file))) return true;
+            for (string d = Path.GetDirectoryName(file); d != null && d.Length > root.TrimEnd('\\').Length; d = Path.GetDirectoryName(d))
+                if (JunkDirs.Contains(Path.GetFileName(d))) return true;
+            return false;
         }
 
         static string ShotDay(FileInfo f)
@@ -233,14 +260,28 @@ namespace DJISortTool
                 if (File.Exists(it.Dest)) { r.Skipped++; continue; }
                 Directory.CreateDirectory(Path.GetDirectoryName(it.Dest));
                 if (TryMove(it.Source, it.Dest)) { r.Moved.Add(it); r.MovedBytes += it.Size; emptied.Add(Path.GetDirectoryName(it.Source)); }
-                else r.Failed++;
+                else {
+                    r.Failed++;
+                    RemoveEmptyUp(Path.GetDirectoryName(it.Dest), scan.Root);   // 하나도 못 옮긴 날짜면 방금 만든 빈 yymmdd_DATA를 남기지 않음
+                }
             }
 
+            // 카드 관리 폴더(MISC). 썸네일·목록뿐이면 휴지통으로, 다른 파일이 섞여 있으면 남기고 그 파일을 이유로 알림
+            // 찌꺼기만 있는 MISC(.dropbox.device 등)는 휴지통을 거치지 않고 지움
             if (trashMisc) {
+                var send = new List<string>();
                 foreach (var misc in FindMisc(scan.Root)) {
-                    if (!OnlyCardFiles(misc)) { r.Kept.Add(misc); continue; }
-                    if (Recycler(misc)) { r.Trashed.Add(misc); emptied.Add(Path.GetDirectoryName(misc)); }
-                    else r.Kept.Add(misc);
+                    string name = misc.Substring(scan.Root.Length + 1);
+                    if (RemoveHollow(misc, scan.Root)) { emptied.Add(Path.GetDirectoryName(misc)); continue; }
+                    string blocker = MiscBlocker(misc, scan.Root);
+                    if (blocker == null) send.Add(misc);
+                    else { r.Kept.Add(name); r.KeptBecause[name] = blocker.Substring(misc.Length + 1); }
+                }
+                TrashAll(send);
+                foreach (var misc in send) {
+                    string name = misc.Substring(scan.Root.Length + 1);
+                    if (!Directory.Exists(misc)) { r.Trashed.Add(name); emptied.Add(Path.GetDirectoryName(misc)); }
+                    else r.TrashFailed.Add(name);
                 }
             }
 
@@ -270,6 +311,7 @@ namespace DJISortTool
                 else r.VerifyFailed++;
             }
             WriteLog(r);
+            NotifyExplorer(scan.Root, r.Renamed);
             return r;
         }
 
@@ -326,20 +368,47 @@ namespace DJISortTool
                    .Where(Directory.Exists).ToList();
         }
 
-        static bool OnlyCardFiles(string dir)
+        // 카드 관리 파일(썸네일·목록)과 찌꺼기로만 되어 있으면 null, 남겨야 할 파일이 있으면 그 경로 (결과 화면에 이유로 보여 줌)
+        static string MiscBlocker(string dir, string root)
         {
             try {
-                return Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories)
-                                .All(f => MiscExt.Contains(Path.GetExtension(f)));
-            } catch (Exception) { return false; }
+                foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                    if (!MiscExt.Contains(Path.GetExtension(f)) && !IsJunk(f, root)) return f;
+                return null;
+            } catch (Exception) { return Path.Combine(dir, "?"); }
         }
 
+        // 찌꺼기 말고는 파일이 하나도 없는 폴더면 찌꺼기를 지우고 폴더째 없앰. 없앴으면 true
+        // 폴더는 비어 있을 때만 지워지는 방식으로 아래부터 하나씩 → 그 사이 생긴 파일이 있어도 지우지 않음
+        static bool RemoveHollow(string dir, string root)
+        {
+            try {
+                if (Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).Any(f => !IsJunk(f, root))) return false;
+                foreach (var f in Directory.GetFiles(dir, "*", SearchOption.AllDirectories)) DeleteJunk(f);
+                foreach (var d in Directory.GetDirectories(dir, "*", SearchOption.AllDirectories).OrderByDescending(x => x.Length)) Directory.Delete(d);
+                Directory.Delete(dir);
+            } catch (Exception) { }
+            return !Directory.Exists(dir);
+        }
+
+        static void DeleteJunk(string file)
+        {
+            File.SetAttributes(file, FileAttributes.Normal);   // Thumbs.db·desktop.ini는 숨김·시스템 파일
+            File.Delete(file);
+        }
+
+        // 파일을 옮겨서 비게 된 폴더를 위로 올라가며 지움. 찌꺼기만 남은 폴더도 빈 폴더로 봄 (DCIM\DJI_001의 Thumbs.db 등)
         static void RemoveEmptyUp(string dir, string root)
         {
             while (!string.IsNullOrEmpty(dir) && IsUnder(dir, root) && !dir.TrimEnd('\\').Equals(root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) {
                 try {
                     if (!Directory.Exists(dir)) { dir = Path.GetDirectoryName(dir); continue; }
-                    if (Directory.EnumerateFileSystemEntries(dir).Any()) return;
+                    var entries = new DirectoryInfo(dir).GetFileSystemInfos();
+                    if (!entries.All(e => e is FileInfo ? IsJunkFile(e.Name) : JunkDirs.Contains(e.Name))) return;
+                    foreach (var e in entries) {
+                        if (e is FileInfo) DeleteJunk(e.FullName);
+                        else if (!RemoveHollow(e.FullName, root)) return;
+                    }
                     Directory.Delete(dir);
                 } catch (Exception) { return; }
                 dir = Path.GetDirectoryName(dir);
@@ -347,6 +416,7 @@ namespace DJISortTool
         }
 
         // ── 되돌리기 ──────────────────────────────────────────────
+        // 휴지통으로 보낸 카드 관리 폴더(MISC)는 되돌리지 않음 (화면에서 미리 알림)
         public static UndoResult Undo(RunResult run)
         {
             var u = new UndoResult();
@@ -367,28 +437,55 @@ namespace DJISortTool
                 } catch (Exception) { u.Failed++; }
             }
             foreach (var d in emptied.OrderByDescending(x => x.Length)) RemoveEmptyUp(d, run.Root);
+            NotifyExplorer(run.Root, run.Renamed.Select(p => new KeyValuePair<string, string>(p.Value, p.Key)));
             return u;
         }
 
         // 옮긴 기록 (프로그램을 닫은 뒤에도 원래 위치를 알 수 있게)
         //  %LOCALAPPDATA%\DJISortTool\logs\yyyyMMdd_HHmmss.txt  "원래 위치<TAB>옮긴 위치"
+        // 테스트에서는 임시 폴더로 바꿔 끼움 (실제 기록 폴더에 테스트 기록이 쌓이지 않게)
+        internal static string LogDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DJISortTool", "logs");
+
         static void WriteLog(RunResult r)
         {
             if (r.Moved.Count == 0) return;
             try {
-                string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DJISortTool", "logs");
-                Directory.CreateDirectory(dir);
+                Directory.CreateDirectory(LogDir);
                 var sb = new StringBuilder();
                 foreach (var m in r.Moved) sb.Append(m.Source).Append('\t').Append(m.Final ?? m.Dest).Append("\r\n");
-                File.WriteAllText(Path.Combine(dir, DateTime.Now.ToString("yyyyMMdd_HHmmss", Inv) + ".txt"), sb.ToString(), new UTF8Encoding(true));
+                File.WriteAllText(Path.Combine(LogDir, DateTime.Now.ToString("yyyyMMdd_HHmmss", Inv) + ".txt"), sb.ToString(), new UTF8Encoding(true));
             } catch (Exception) { }
         }
 
         // ── 휴지통 ────────────────────────────────────────────────
-        // 테스트에서는 실제 휴지통 대신 다른 동작으로 바꿔 끼움
-        internal static Func<string, bool> Recycler = Recycle;
+        // 테스트에서는 실제 휴지통 대신 다른 동작으로 바꿔 끼움. 반환: 휴지통으로 간 개수
+        internal static Func<IList<string>, int> Recycler = Recycle;
 
-        // 휴지통이 없는 위치(NAS 등)라 영구 삭제가 되는 경우엔 Windows가 경고를 먼저 띄움
+        // 한 번에 보내고, 남은 것(탐색기·백신이 잠깐 잡고 있던 것 등)은 잠시 뒤 하나씩 다시
+        static void TrashAll(List<string> paths)
+        {
+            if (paths.Count == 0) return;
+            Recycler(paths);
+            for (int i = 0; i < 3; i++) {
+                var left = paths.Where(p => File.Exists(p) || Directory.Exists(p)).ToList();
+                if (left.Count == 0) return;
+                Thread.Sleep(700);
+                foreach (var p in left) Recycler(new[] { p });
+            }
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        static extern void SHChangeNotify(int eventId, uint flags, string item1, string item2);
+
+        // 탐색기 창이 이미 지운 폴더(DCIM 등)나 이름을 바꾸기 전 폴더(260823_DATA)를 계속 보여 주지 않게 새로 고침 알림
+        static void NotifyExplorer(string root, IEnumerable<KeyValuePair<string, string>> renamed)
+        {
+            try {
+                foreach (var p in renamed) SHChangeNotify(0x00020000, 0x0005, p.Key, p.Value);   // SHCNE_RENAMEFOLDER, SHCNF_PATHW
+                SHChangeNotify(0x00001000, 0x3005, root, null);                                 // SHCNE_UPDATEDIR, SHCNF_PATHW | SHCNF_FLUSHNOWAIT
+            } catch (Exception) { }
+        }
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct SHFILEOPSTRUCT
         {
@@ -399,15 +496,16 @@ namespace DJISortTool
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
         static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
 
-        static bool Recycle(string path)
+        // 여러 개를 한 번에. 휴지통이 없는 위치(NAS 등)라 영구 삭제가 되는 경우엔 Windows가 경고를 먼저 띄움
+        static int Recycle(IList<string> paths)
         {
             var op = new SHFILEOPSTRUCT {
                 wFunc  = 3,                                        // FO_DELETE
-                pFrom  = path + "\0\0",
+                pFrom  = string.Join("\0", paths) + "\0\0",
                 fFlags = 0x40 | 0x10 | 0x4 | 0x400 | 0x4000        // 휴지통, 확인 생략, 진행창 없음, 오류창 없음, 영구삭제 경고
             };
             SHFileOperation(ref op);
-            return !Directory.Exists(path);
+            return paths.Count(p => !File.Exists(p) && !Directory.Exists(p));
         }
     }
 }

@@ -12,18 +12,31 @@ namespace DJISortTool
     {
         static int failures;
         static string temp, trash;
+        static int recycled;          // 휴지통으로 보낸 항목 수 (폴더 하나 = 1)
 
         static int Main(string[] args)
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             temp  = Path.Combine(Path.GetTempPath(), "DJISortToolTest_" + Guid.NewGuid().ToString("N").Substring(0, 8));
             trash = Path.Combine(temp, "_trash");
+            Organizer.LogDir = Path.Combine(temp, "_logs");   // 실제 기록 폴더(%LOCALAPPDATA%)에 테스트 기록을 남기지 않음
             Directory.CreateDirectory(trash);
-            // 실제 휴지통 대신 테스트 폴더로 옮김
-            Organizer.Recycler = p => { Directory.Move(p, Path.Combine(trash, Guid.NewGuid().ToString("N"))); return true; };
+            // 실제 휴지통 대신 테스트 폴더로 옮김. 실제 휴지통처럼 못 보내면(사용 중) 조용히 남김
+            Organizer.Recycler = paths => {
+                int n = 0;
+                foreach (var p in paths) {
+                    string to = Path.Combine(trash, Guid.NewGuid().ToString("N"));
+                    try {
+                        if (Directory.Exists(p)) { Directory.Move(p, to); n++; }
+                        else if (File.Exists(p)) { File.Move(p, to); n++; }
+                    } catch (IOException) { }
+                }
+                recycled += n;
+                return n;
+            };
             try {
                 if (args.Length == 2 && args[0] == "--replica") Replica(args[1]);
-                else { CardCopy(); MidnightAndLeftovers(); LooseFiles(); DcimOnly(); MergeSameDay(); SizeFormat(); Guards(); }
+                else { CardCopy(); MidnightAndLeftovers(); LooseFiles(); DcimOnly(); MergeSameDay(); SizeFormat(); Guards(); JunkLeftovers(); LockedMisc(); }
             } finally {
                 try { Directory.Delete(temp, true); } catch (Exception) { }
             }
@@ -69,7 +82,8 @@ namespace DJISortTool
             Check(Exists(root, @"260823_DATA_1M\260823_Audio\DJI_20260823135545_0039_D.AAC"), "AAC → Audio");
             Check(Exists(root, @"260829_DATA_1M\260829_Photo\jpg\DJI_20260829091500_0043_D.JPG"), "JPG → Photo\\jpg");
             Check(Exists(root, @"260829_DATA_1M\260829_Photo\dng\DJI_20260829091500_0043_D.DNG"), "DNG → Photo\\dng");
-            Check(r.Trashed.Count == 2 && !Directory.Exists(Path.Combine(root, "MISC")), "MISC · DCIM\\MISC 휴지통으로");
+            Check(r.Trashed.SequenceEqual(new[] { "MISC" }) && !Directory.Exists(Path.Combine(root, "MISC")), "MISC 휴지통으로: " + string.Join(",", r.Trashed));
+            Check(r.Kept.Count == 0 && r.TrashFailed.Count == 0, "남긴 관리 폴더 없음 (.dropbox.device만 있던 DCIM\\MISC는 그냥 지움)");
             Check(!Directory.Exists(Path.Combine(root, "DCIM")), "비게 된 DCIM 정리");
             Check(Directory.Exists(Path.Combine(root, "내가 만든 빈 폴더")), "원래 비어 있던 폴더는 그대로");
             Check(Organizer.Scan(root).Error != null, "정리한 폴더를 다시 넣으면 할 일 없음");
@@ -104,7 +118,9 @@ namespace DJISortTool
 
             var r = Organizer.Run(s, true, true, null);
             Check(r.Moved.Count == 2 && r.Skipped == 1, "2개 옮기고 1개 건너뜀");
-            Check(r.Kept.Count == 1 && File.Exists(Path.Combine(root, @"MISC\메모.txt")), "사용자 파일이 든 MISC는 남김");
+            string why;
+            Check(r.Kept.SequenceEqual(new[] { "MISC" }) && File.Exists(Path.Combine(root, @"MISC\메모.txt")), "사용자 파일이 든 MISC는 남김");
+            Check(r.KeptBecause.TryGetValue("MISC", out why) && why == "메모.txt", "남긴 이유 = 메모.txt");
             Check(Exists(root, @"DCIM\100MEDIA\DJI_0001.SRT") && Exists(root, @"DCIM\100MEDIA\DJI_20260905104000_0008_D.MP4"),
                   "정리 못 한 파일이 남은 폴더는 그대로");
         }
@@ -130,7 +146,7 @@ namespace DJISortTool
             Clip(Path.Combine(root, "DJI_001"), "DJI_20260912080000_0200_D", lrf: true, aac: true);
             Touch(Path.Combine(root, "MISC"), ".dropbox.device");
             var r = Organizer.Run(Organizer.Scan(root), true, true, null);
-            Check(r.Moved.Count == 3 && r.Trashed.Count == 1, "3개 옮기고 DCIM\\MISC 휴지통으로");
+            Check(r.Moved.Count == 3 && !Directory.Exists(Path.Combine(root, "MISC")), "3개 옮기고 .dropbox.device만 있던 DCIM\\MISC 정리");
             Check(Exists(root, @"260912_DATA_1M\260912_Footage\DJI_20260912080000_0200_D.MP4"), "DCIM 안에 날짜 폴더");
             Check(!Directory.Exists(Path.Combine(root, "DJI_001")), "비게 된 DJI_001 정리");
         }
@@ -179,7 +195,55 @@ namespace DJISortTool
             Check(Organizer.Scan(Path.Combine(temp, "없는 폴더")).Error != null, "없는 폴더");
             string sony = Dir("sony");
             Touch(Path.Combine(sony, @"M4ROOT\CLIP"), "C0001.MP4");
-            Check(Organizer.Scan(sony).Error != null, "DJI 파일 없는 폴더(소니 카드)는 할 일 없음");
+            var e = Organizer.Scan(sony).Error;
+            Check(e != null && e.Contains("SONY 타입 정리기"), "DJI 파일 없는 폴더(소니 카드)는 할 일 없음 (SONY 타입 정리기를 알려 줌)");
+        }
+
+        // 탐색기·Mac·NAS 찌꺼기가 있는 카드: 정리 대상으로 세지 않고, DCIM 등이 남지 않음 (SONY 타입 정리기 · 옛 소니정리툴 1.3과 같은 처리)
+        static void JunkLeftovers()
+        {
+            Console.WriteLine("[탐색기·Mac·NAS 찌꺼기]");
+            string root = Dir("junk");
+            string clips = Path.Combine(root, @"DCIM\DJI_001");
+            Clip(clips, "DJI_20260920101010_0500_D", lrf: true, aac: false);
+            Touch(clips, "DJI_20260920102020_0501_D.JPG");
+            Touch(clips, "Thumbs.db");
+            Touch(clips, "._DJI_20260920101010_0500_D.MP4");
+            Touch(Path.Combine(clips, @"@eaDir\DJI_20260920102020_0501_D.JPG"), "SYNOPHOTO_THUMB_XL.jpg");
+            Touch(Path.Combine(root, "DCIM"), "desktop.ini");
+            Touch(Path.Combine(root, "DCIM"), ".DS_Store");
+            Touch(Path.Combine(root, @"MISC\THM\DJI_001"), "DJI_20260920101010_0500_D.THM");
+            Touch(Path.Combine(root, "MISC"), ".DS_Store");
+            var s = Organizer.Scan(root);
+            Check(s.Items.Count == 3 && s.Unhandled.Count == 0, "._DJI_…MP4·@eaDir 썸네일은 정리 대상으로 세지 않음: " + s.Items.Count + " · " + s.Unhandled.Count);
+            var r = Organizer.Run(s, true, true, null);
+            var left = Directory.GetFileSystemEntries(root).Select(Path.GetFileName).OrderBy(x => x).ToList();
+            Check(left.SequenceEqual(new[] { "260920_DATA_1M" }), "날짜 폴더만 남음: " + string.Join(", ", left));
+            Check(r.Trashed.SequenceEqual(new[] { "MISC" }) && r.Kept.Count == 0, "MISC(썸네일 + .DS_Store)는 휴지통으로");
+        }
+
+        // 탐색기 창이 MISC\THM을 열고 있어 MISC를 휴지통으로 못 보냄 → '남은 파일'이 아니라 '보내지 못함'으로 알림
+        static void LockedMisc()
+        {
+            Console.WriteLine("[탐색기가 MISC를 열고 있음]");
+            string root = Dir("locked");
+            Clip(Path.Combine(root, @"DCIM\DJI_001"), "DJI_20260921090000_0600_D", lrf: true, aac: false);
+            Touch(Path.Combine(root, @"MISC\THM\DJI_001"), "DJI_20260921090000_0600_D.THM");
+            using (var h = CreateFile(Path.Combine(root, @"MISC\THM"), 0x1, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                var r = Organizer.Run(Organizer.Scan(root), true, true, null);
+                Check(r.TrashFailed.SequenceEqual(new[] { "MISC" }) && r.Kept.Count == 0, "MISC는 '휴지통으로 보내지 못함': " + string.Join(",", r.TrashFailed));
+                Check(r.Moved.Count == 2 && !Directory.Exists(Path.Combine(root, "DCIM")), "영상은 정리하고 비게 된 DCIM도 정리");
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+
+        static bool IsJunkPath(string rel)
+        {
+            string n = Path.GetFileName(rel);
+            return n.StartsWith("._") || new[] { "Thumbs.db", "desktop.ini", ".DS_Store", ".dropbox.device", "ehthumbs.db" }.Contains(n, StringComparer.OrdinalIgnoreCase)
+                   || rel.IndexOf("@eaDir", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         // ── 실제 폴더 복제본 ──────────────────────────────────────
@@ -213,7 +277,7 @@ namespace DJISortTool
             var u = Organizer.Undo(r);
             var after = Snapshot(root);
             Check(u.Failed == 0 && after.Except(before).Count() == 0 &&
-                  before.Except(after).All(p => p.StartsWith("MISC") || p.StartsWith(@"DCIM\MISC")), "되돌리면 원래 구조 (MISC만 휴지통에)");
+                  before.Except(after).All(p => p.StartsWith("MISC") || p.StartsWith(@"DCIM\MISC") || IsJunkPath(p)), "되돌리면 원래 구조 (MISC·찌꺼기만 빠짐)");
         }
 
         // ── 도우미 ────────────────────────────────────────────────
